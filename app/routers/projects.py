@@ -1,8 +1,8 @@
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status, Depends
 from uuid import UUID
 
-from app.models.project import ProjectCreate, ProjectUpdate, ProjectResponse
+from app.models.project import ProjectCreate, ProjectUpdate, ProjectResponse, STATUS_VALIDOS, PRIORIDADES_VALIDAS
 
 router = APIRouter(
     prefix="/projects",
@@ -10,7 +10,8 @@ router = APIRouter(
     responses={
         404: {"description": "Projeto não encontrado"},
         400: {"description": "Dados inválidos"},
-        409: {"description": "Conflito de dados"}
+        409: {"description": "Conflito de dados"},
+        422: {"description": "Erro de validação"}
     },
 )
 
@@ -26,17 +27,30 @@ def check_title_exists(title: str, exclude_id: Optional[UUID] = None) -> bool:
 
 @router.get("/", response_model=List[ProjectResponse])
 async def list_projects(
-    status: Optional[str] = Query(None, pattern="^(Planejado|Em Andamento|Concluído|Cancelado)$"),
-    prioridade: Optional[int] = Query(None, ge=1, le=3),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(10, ge=1, le=100),
-    order_by: str = Query("data_criacao", pattern="^(data_criacao|titulo|prioridade)$"),
-    order_direction: str = Query("desc", pattern="^(asc|desc)$")
+    status: Optional[str] = Query(None, description="Filtrar por status"),
+    prioridade: Optional[int] = Query(None, description="Filtrar por prioridade"),
+    skip: int = Query(0, ge=0, description="Número de registros para pular"),
+    limit: int = Query(10, ge=1, le=100, description="Número máximo de registros"),
+    order_by: str = Query("data_criacao", description="Campo para ordenação"),
+    order_direction: str = Query("desc", description="Direção da ordenação (asc/desc)")
 ):
     """
     Lista todos os projetos com suporte a filtros, paginação e ordenação.
     """
     try:
+        # Validação dos parâmetros de filtro
+        if status and status not in STATUS_VALIDOS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Status inválido. Valores permitidos: {STATUS_VALIDOS}"
+            )
+        
+        if prioridade and prioridade not in PRIORIDADES_VALIDAS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Prioridade inválida. Valores permitidos: {PRIORIDADES_VALIDAS}"
+            )
+
         filtered_projects = list(projects_db.values())
         
         # Aplicando filtros
@@ -54,6 +68,8 @@ async def list_projects(
         
         # Paginação
         return filtered_projects[skip:skip + limit]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -123,6 +139,13 @@ async def update_project(project_id: UUID, project_update: ProjectUpdate):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Já existe um projeto com este título"
+            )
+        
+        # Garante que id e data_criacao não sejam alterados
+        if "id" in update_data or "data_criacao" in update_data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Não é permitido alterar o ID ou a data de criação do projeto"
             )
         
         updated_project = current_project.model_copy(update=update_data)
